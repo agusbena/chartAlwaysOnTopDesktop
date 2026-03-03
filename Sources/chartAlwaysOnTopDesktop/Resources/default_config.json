@@ -1,0 +1,81 @@
+{
+  "polling": {
+    "defaultPollSeconds": 2,
+    "staleAfterSeconds": 10
+  },
+  "window": {
+    "opacity": 0.86,
+    "originX": 140,
+    "originY": 120,
+    "width": 1000,
+    "height": 520,
+    "clickThroughByDefault": true
+  },
+  "assets": [
+    {
+      "id": "btc",
+      "symbol": "BTCUSDT",
+      "enabled": true,
+      "provider": "binance",
+      "timeframe": "1m",
+      "pollSeconds": 2
+    },
+    {
+      "id": "eth",
+      "symbol": "ETHUSDT",
+      "enabled": false,
+      "provider": "binance",
+      "timeframe": "1m",
+      "pollSeconds": 2
+    }
+  ],
+  "indicators": [
+    {
+      "id": "ema_fast",
+      "type": "ema",
+      "enabled": true,
+      "colorHex": "#F9E79F",
+      "params": { "period": 12 }
+    },
+    {
+      "id": "ema_slow",
+      "type": "ema",
+      "enabled": true,
+      "colorHex": "#76D7C4",
+      "params": { "period": 26 }
+    },
+    {
+      "id": "rsi_main",
+      "type": "rsi",
+      "enabled": true,
+      "colorHex": "#F5B7B1",
+      "params": { "period": 14 }
+    }
+  ],
+  "alerts": [
+    {
+      "id": "btc_price_cross",
+      "assetId": "btc",
+      "source": { "kind": "price" },
+      "operator": "crossUp",
+      "threshold": 100000.0,
+      "enabled": true,
+      "soundId": "Glass",
+      "blinkEnabled": true
+    },
+    {
+      "id": "btc_rsi_oversold",
+      "assetId": "btc",
+      "source": { "kind": "indicator", "indicatorId": "rsi_main" },
+      "operator": "<=",
+      "threshold": 30.0,
+      "enabled": true,
+      "soundId": "Funk",
+      "blinkEnabled": true
+    }
+  ],
+  "ui": {
+    "yAxisPaddingFraction": 0.08,
+    "maxCandles": 800
+  }
+}
