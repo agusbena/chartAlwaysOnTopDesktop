@@ -66,7 +66,8 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             frame: rendererFrame,
             viewport: viewport,
             yPadding: config.ui.yAxisPaddingFraction,
-            backgroundOpacity: config.ui.backgroundOpacity
+            backgroundOpacity: config.ui.backgroundOpacity,
+            keepBlinkingUntilCtrlClick: config.ui.keepBlinkingUntilCtrlClick
         )
         renderer.frame = rendererFrame
         chartRenderer = renderer
@@ -110,7 +111,10 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         }
         engine.onAlertEvents = { [weak self] events in
             DispatchQueue.main.async {
-                events.forEach { self?.alertPresenter.present($0) }
+                events.forEach {
+                    self?.chartRenderer?.pushAlert($0)
+                    self?.alertPresenter.present($0)
+                }
             }
         }
 
@@ -136,6 +140,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
                 }
             }
             chartRenderer?.setBackgroundOpacity(config.ui.backgroundOpacity)
+            chartRenderer?.setKeepBlinkingUntilCtrlClick(config.ui.keepBlinkingUntilCtrlClick)
             overlayWindowManager?.setClickThrough(config.window.clickThroughByDefault)
             print("Config reloaded")
         case .failure(let error):

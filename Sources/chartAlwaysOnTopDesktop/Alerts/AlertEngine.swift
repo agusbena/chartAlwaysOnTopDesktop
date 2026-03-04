@@ -26,43 +26,63 @@ final class AlertEngine {
             }
             guard let value = currentValue else { continue }
 
-            let shouldTrigger = isTriggered(alert: alert, value: value, previous: previousValues[alert.id])
-            if shouldTrigger {
-                if !activeCrossing.contains(alert.id) {
-                    events.append(
-                        AlertEvent(
-                            alertId: alert.id,
-                            assetId: alert.assetId,
-                            value: value,
-                            threshold: alert.threshold,
-                            soundId: alert.soundId,
-                            blinkEnabled: alert.blinkEnabled
+            for threshold in alert.thresholds {
+                let key = runtimeKey(for: alert, threshold: threshold)
+                let shouldTrigger = isTriggered(
+                    operator: alert.operator,
+                    threshold: threshold,
+                    value: value,
+                    previous: previousValues[key]
+                )
+                if shouldTrigger {
+                    if !activeCrossing.contains(key) {
+                        events.append(
+                            AlertEvent(
+                                alertId: alert.id,
+                                assetId: alert.assetId,
+                                value: value,
+                                threshold: threshold,
+                                soundId: alert.soundId,
+                                blinkEnabled: alert.blinkEnabled
+                            )
                         )
-                    )
-                    activeCrossing.insert(alert.id)
+                        activeCrossing.insert(key)
+                    }
+                } else {
+                    activeCrossing.remove(key)
                 }
-            } else {
-                activeCrossing.remove(alert.id)
+                previousValues[key] = value
             }
-
-            previousValues[alert.id] = value
         }
 
         return events
     }
 
-    private func isTriggered(alert: AlertConfig, value: Double, previous: Double?) -> Bool {
-        switch alert.operator {
+    private func runtimeKey(for alert: AlertConfig, threshold: Double) -> String {
+        "\(alert.id)|\(operatorToken(alert.operator))|\(threshold)"
+    }
+
+    private func operatorToken(_ op: AlertOperator) -> String {
+        switch op {
+        case .greaterThanOrEqual: return "gte"
+        case .lessThanOrEqual: return "lte"
+        case .crossUp: return "crossUp"
+        case .crossDown: return "crossDown"
+        }
+    }
+
+    private func isTriggered(operator op: AlertOperator, threshold: Double, value: Double, previous: Double?) -> Bool {
+        switch op {
         case .greaterThanOrEqual:
-            return value >= alert.threshold
+            return value >= threshold
         case .lessThanOrEqual:
-            return value <= alert.threshold
+            return value <= threshold
         case .crossUp:
             guard let prev = previous else { return false }
-            return prev < alert.threshold && value >= alert.threshold
+            return prev < threshold && value >= threshold
         case .crossDown:
             guard let prev = previous else { return false }
-            return prev > alert.threshold && value <= alert.threshold
+            return prev > threshold && value <= threshold
         }
     }
 }

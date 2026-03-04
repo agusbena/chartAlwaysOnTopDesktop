@@ -12,7 +12,7 @@ final class ConfigServiceTests: XCTestCase {
             ],
             indicators: [],
             alerts: [],
-            ui: UIConfig(yAxisPaddingFraction: 0.05, maxCandles: 300, backgroundOpacity: 0.1)
+            ui: UIConfig(yAxisPaddingFraction: 0.05, maxCandles: 300, backgroundOpacity: 0.1, keepBlinkingUntilCtrlClick: false)
         )
 
         XCTAssertThrowsError(try config.validate())

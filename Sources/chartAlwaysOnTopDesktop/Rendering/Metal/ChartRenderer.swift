@@ -12,6 +12,10 @@ private final class RendererState {
     var frame: ChartFrame?
     var range = PriceRange(min: 0, max: 1)
     var backgroundOpacity: Float = 0.1
+    var keepBlinkingUntilCtrlClick = false
+    var persistentBlinkActive = false
+    var latestAlerts: [String] = []
+    var blinkUntil: Date?
 }
 
 final class ChartRenderer: NSView, MTKViewDelegate {
@@ -20,13 +24,18 @@ final class ChartRenderer: NSView, MTKViewDelegate {
     private let yAxisTopLabel = NSTextField(labelWithString: "")
     private let yAxisBottomLabel = NSTextField(labelWithString: "")
     private let staleLabel = NSTextField(labelWithString: "")
+    private let currentPriceLabel = NSTextField(labelWithString: "")
+    private let alertLabels = [
+        NSTextField(labelWithString: ""),
+        NSTextField(labelWithString: ""),
+        NSTextField(labelWithString: "")
+    ]
 
     private let state = RendererState()
     private let stateQueue = DispatchQueue(label: "renderer.state.queue")
 
     private let viewport: ChartViewportController
     private let yPadding: Double
-    private var blinkUntil: Date?
 
     private var deviceRef: MTLDevice?
     private var queueRef: MTLCommandQueue?
@@ -37,12 +46,19 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         return formatter
     }()
 
-    init(frame frameRect: CGRect, viewport: ChartViewportController, yPadding: Double, backgroundOpacity: Double) {
+    init(
+        frame frameRect: CGRect,
+        viewport: ChartViewportController,
+        yPadding: Double,
+        backgroundOpacity: Double,
+        keepBlinkingUntilCtrlClick: Bool
+    ) {
         self.viewport = viewport
         self.yPadding = yPadding
         self.mtkView = MTKView(frame: frameRect)
         super.init(frame: frameRect)
         state.backgroundOpacity = Float(backgroundOpacity)
+        state.keepBlinkingUntilCtrlClick = keepBlinkingUntilCtrlClick
 
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
@@ -77,6 +93,12 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         }
     }
 
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            acknowledgePersistentBlink()
+        }
+    }
+
     func draw(in view: MTKView) {
         guard let drawable = view.currentDrawable,
               let renderPassDescriptor = view.currentRenderPassDescriptor,
@@ -87,11 +109,17 @@ final class ChartRenderer: NSView, MTKViewDelegate {
             return
         }
 
-        let snapshot = stateQueue.sync { () -> (ChartFrame?, PriceRange, Float) in
-            (state.frame, state.range, state.backgroundOpacity)
+        let snapshot = stateQueue.sync { () -> (ChartFrame?, PriceRange, Float, Bool, Date?) in
+            (state.frame, state.range, state.backgroundOpacity, state.persistentBlinkActive, state.blinkUntil)
         }
 
-        let vertices = buildVertices(frame: snapshot.0, range: snapshot.1, backgroundOpacity: snapshot.2)
+        let vertices = buildVertices(
+            frame: snapshot.0,
+            range: snapshot.1,
+            backgroundOpacity: snapshot.2,
+            persistentBlinkActive: snapshot.3,
+            blinkUntil: snapshot.4
+        )
         if !vertices.isEmpty, let buffer = deviceRef?.makeBuffer(bytes: vertices, length: MemoryLayout<Vertex>.stride * vertices.count) {
             encoder.setRenderPipelineState(pipelineState)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
@@ -119,12 +147,46 @@ final class ChartRenderer: NSView, MTKViewDelegate {
     }
 
     func triggerBlinkPulse() {
-        blinkUntil = Date().addingTimeInterval(0.35)
+        stateQueue.sync {
+            if state.keepBlinkingUntilCtrlClick {
+                state.persistentBlinkActive = true
+            } else {
+                state.blinkUntil = Date().addingTimeInterval(0.35)
+            }
+        }
     }
 
     func setBackgroundOpacity(_ value: Double) {
         stateQueue.sync {
             state.backgroundOpacity = Float(Swift.max(0, Swift.min(1, value)))
+        }
+    }
+
+    func setKeepBlinkingUntilCtrlClick(_ enabled: Bool) {
+        stateQueue.sync {
+            state.keepBlinkingUntilCtrlClick = enabled
+            if !enabled {
+                state.persistentBlinkActive = false
+            }
+        }
+    }
+
+    func pushAlert(_ event: AlertEvent) {
+        stateQueue.sync {
+            let line = "\(event.alertId): \(event.threshold)"
+            state.latestAlerts.insert(line, at: 0)
+            if state.latestAlerts.count > 3 {
+                state.latestAlerts = Array(state.latestAlerts.prefix(3))
+            }
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.updateLabels()
+        }
+    }
+
+    private func acknowledgePersistentBlink() {
+        stateQueue.sync {
+            state.persistentBlinkActive = false
         }
     }
 
@@ -164,8 +226,8 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         mtkView.device = device
         mtkView.delegate = self
         mtkView.colorPixelFormat = .bgra8Unorm
-        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0.0)// Background color.
-        mtkView.layer?.isOpaque = false;
+        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        mtkView.layer?.isOpaque = false
         mtkView.isPaused = false
         mtkView.enableSetNeedsDisplay = false
         mtkView.preferredFramesPerSecond = 30
@@ -192,7 +254,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
     }
 
     private func configureAxisLabels() {
-        [xAxisLabel, yAxisTopLabel, yAxisBottomLabel, staleLabel].forEach {
+        [xAxisLabel, yAxisTopLabel, yAxisBottomLabel, staleLabel, currentPriceLabel].forEach {
             $0.isBezeled = false
             $0.drawsBackground = false
             $0.textColor = NSColor.white.withAlphaComponent(0.9)
@@ -200,8 +262,17 @@ final class ChartRenderer: NSView, MTKViewDelegate {
             $0.lineBreakMode = .byClipping
             addSubview($0)
         }
+        alertLabels.forEach {
+            $0.isBezeled = false
+            $0.drawsBackground = false
+            $0.textColor = NSColor.systemYellow.withAlphaComponent(0.95)
+            $0.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            $0.lineBreakMode = .byTruncatingTail
+            addSubview($0)
+        }
 
         staleLabel.textColor = NSColor.systemOrange
+        currentPriceLabel.textColor = NSColor.systemGreen
         layoutLabels()
     }
 
@@ -209,15 +280,24 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         xAxisLabel.frame = CGRect(x: 8, y: 6, width: bounds.width - 16, height: 14)
         yAxisTopLabel.frame = CGRect(x: 8, y: bounds.height - 18, width: 150, height: 14)
         yAxisBottomLabel.frame = CGRect(x: 8, y: 22, width: 150, height: 14)
+        currentPriceLabel.frame = CGRect(x: 170, y: bounds.height - 18, width: 220, height: 14)
         staleLabel.frame = CGRect(x: bounds.width - 140, y: bounds.height - 18, width: 130, height: 14)
+        alertLabels[0].frame = CGRect(x: bounds.width - 220, y: 40, width: 310, height: 14)
+        alertLabels[1].frame = CGRect(x: bounds.width - 220, y: 24, width: 310, height: 14)
+        alertLabels[2].frame = CGRect(x: bounds.width - 220, y: 8, width: 310, height: 14)
     }
 
-    private func updateLabels() { // Print Prices values
-        guard let frame = state.frame else { return }
+    private func updateLabels() {
+        let snapshot = stateQueue.sync { () -> (ChartFrame?, PriceRange, [String]) in
+            (state.frame, state.range, state.latestAlerts)
+        }
+        guard let frame = snapshot.0 else { return }
         let slice = viewport.visibleSlice(for: frame.candles)
-        let range = state.range
+        let range = snapshot.1
+        let latestAlerts = snapshot.2
         yAxisTopLabel.stringValue = String(format: "%.4f", range.max)
         yAxisBottomLabel.stringValue = String(format: "%.4f", range.min)
+        currentPriceLabel.stringValue = String(format: "Price: %.4f", frame.candles.last?.close ?? 0)
 
         if let first = slice.first?.timestamp, let last = slice.last?.timestamp {
             xAxisLabel.stringValue = "\(dateFormatter.string(from: first)) - \(dateFormatter.string(from: last))  \(frame.symbol)"
@@ -226,9 +306,18 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         }
 
         staleLabel.stringValue = frame.isStale ? "STALE DATA" : ""
+        for idx in 0 ..< alertLabels.count {
+            alertLabels[idx].stringValue = idx < latestAlerts.count ? latestAlerts[idx] : ""
+        }
     }
 
-    private func buildVertices(frame: ChartFrame?, range: PriceRange, backgroundOpacity: Float) -> [Vertex] {
+    private func buildVertices(
+        frame: ChartFrame?,
+        range: PriceRange,
+        backgroundOpacity: Float,
+        persistentBlinkActive: Bool,
+        blinkUntil: Date?
+    ) -> [Vertex] {
         guard let frame else { return [] }
         let candles = Array(viewport.visibleSlice(for: frame.candles))
         guard candles.count > 1 else { return [] }
@@ -237,7 +326,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         vertices.reserveCapacity(candles.count * 12)
 
         if backgroundOpacity > 0 {
-            let bgColorLevel: Float = 0.35;
+            let bgColorLevel: Float = 0.35
             addQuad(
                 vertices: &vertices,
                 x0: -1,
@@ -248,7 +337,19 @@ final class ChartRenderer: NSView, MTKViewDelegate {
             )
         }
 
-        if let blinkUntil, Date() < blinkUntil {
+        if persistentBlinkActive {
+            let phase = Int(Date().timeIntervalSinceReferenceDate * 4) % 2 == 0
+            if phase {
+                addQuad(
+                    vertices: &vertices,
+                    x0: -1,
+                    y0: -1,
+                    x1: 1,
+                    y1: 1,
+                    color: SIMD4<Float>(1, 0, 0, 0.14)
+                )
+            }
+        } else if let blinkUntil, Date() < blinkUntil {
             addQuad(
                 vertices: &vertices,
                 x0: -1,
@@ -272,7 +373,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
             let lowY = mapPriceToY(candle.low, range: range)
             let up = candle.close >= candle.open
             //let color = up ? SIMD4<Float>(0.2, 0.85, 0.35, 0.92) : SIMD4<Float>(0.95, 0.25, 0.25, 0.92)// Candle sticks colors.
-            let color = up ? SIMD4<Float>(0.2, 0.85, 0.35, 1) : SIMD4<Float>(0.95, 0.25, 0.25, 1)// Candle sticks colors.
+            let color = up ? SIMD4<Float>(0.2, 0.85, 0.35, 1) : SIMD4<Float>(0.95, 0.25, 0.25, 1)
 
             addQuad(vertices: &vertices, x0: x - 0.004, y0: lowY, x1: x + 0.004, y1: highY, color: color)
             addQuad(vertices: &vertices, x0: x - candleWidth / 2, y0: min(openY, closeY), x1: x + candleWidth / 2, y1: max(openY, closeY), color: color)
@@ -307,7 +408,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         for i in 1 ..< points.count {
             let p0 = points[i - 1]
             let p1 = points[i]
-            addLineSegment(vertices: &vertices, from: p0, to: p1, thickness: 0.0035, color: rgba)
+            addLineSegment(vertices: &vertices, from: p0, to: p1, thickness: 0.007, color: rgba)
         }
     }
 

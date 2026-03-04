@@ -64,11 +64,21 @@
       "blinkEnabled": true
     },
     {
-      "id": "btc_rsi_oversold",
+      "id": "btc_rsiOversold",
       "assetId": "btc",
       "source": { "kind": "indicator", "indicatorId": "rsi_main" },
       "operator": "<=",
       "threshold": 30.0,
+      "enabled": true,
+      "soundId": "Funk",
+      "blinkEnabled": true
+    },
+    {
+      "id": "btc_rsiOverBought",
+      "assetId": "btc",
+      "source": { "kind": "indicator", "indicatorId": "rsi_main" },
+      "operator": ">=",
+      "threshold": 70.0,
       "enabled": true,
       "soundId": "Funk",
       "blinkEnabled": true
@@ -77,6 +87,7 @@
   "ui": {
     "yAxisPaddingFraction": 0.08,
     "maxCandles": 800,
-    "backgroundOpacity": 0.12
+    "backgroundOpacity": 0.12,
+    "keepBlinkingUntilCtrlClick": true
   }
 }
