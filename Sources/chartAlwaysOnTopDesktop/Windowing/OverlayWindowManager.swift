@@ -12,7 +12,7 @@ final class OverlayWindowManager {
             defer: false
         )
 
-        window.isOpaque = false
+        window.isOpaque = true
         window.backgroundColor = NSColor.clear
         window.alphaValue = CGFloat(opacity)
         window.hasShadow = false

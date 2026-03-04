@@ -10,7 +10,7 @@ final class MarketDataEngineTests: XCTestCase {
             assets: [AssetConfig(id: "a", symbol: "BTCUSDT", enabled: true, provider: "binance", timeframe: .m1, pollSeconds: 2)],
             indicators: [],
             alerts: [],
-            ui: UIConfig(yAxisPaddingFraction: 0.05, maxCandles: 300)
+            ui: UIConfig(yAxisPaddingFraction: 0.05, maxCandles: 300, backgroundOpacity: 0.1)
         )
 
         let engine = MarketDataEngine(

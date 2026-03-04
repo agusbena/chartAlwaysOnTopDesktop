@@ -76,6 +76,7 @@
   ],
   "ui": {
     "yAxisPaddingFraction": 0.08,
-    "maxCandles": 800
+    "maxCandles": 800,
+    "backgroundOpacity": 0.12
   }
 }

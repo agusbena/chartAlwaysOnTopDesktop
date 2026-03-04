@@ -62,7 +62,12 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
 
         let viewport = ChartViewportController(initialVisibleCount: min(config.ui.maxCandles, 180))
         let rendererFrame = CGRect(origin: .zero, size: config.window.frame.size)
-        let renderer = ChartRenderer(frame: rendererFrame, viewport: viewport, yPadding: config.ui.yAxisPaddingFraction)
+        let renderer = ChartRenderer(
+            frame: rendererFrame,
+            viewport: viewport,
+            yPadding: config.ui.yAxisPaddingFraction,
+            backgroundOpacity: config.ui.backgroundOpacity
+        )
         renderer.frame = rendererFrame
         chartRenderer = renderer
 
@@ -130,6 +135,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
                     overlayWindowManager?.window?.alphaValue = target
                 }
             }
+            chartRenderer?.setBackgroundOpacity(config.ui.backgroundOpacity)
             overlayWindowManager?.setClickThrough(config.window.clickThroughByDefault)
             print("Config reloaded")
         case .failure(let error):

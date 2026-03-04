@@ -49,6 +49,10 @@ struct AppConfig: Codable {
                 throw ConfigError.validation("Alert \(alert.id) references unknown indicator \(indicatorId)")
             }
         }
+
+        guard (0 ... 1).contains(ui.backgroundOpacity) else {
+            throw ConfigError.validation("ui.backgroundOpacity must be between 0 and 1")
+        }
     }
 }
 
@@ -69,6 +73,26 @@ struct WindowConfig: Codable {
 struct UIConfig: Codable {
     let yAxisPaddingFraction: Double
     let maxCandles: Int
+    let backgroundOpacity: Double
+
+    init(yAxisPaddingFraction: Double, maxCandles: Int, backgroundOpacity: Double) {
+        self.yAxisPaddingFraction = yAxisPaddingFraction
+        self.maxCandles = maxCandles
+        self.backgroundOpacity = backgroundOpacity
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case yAxisPaddingFraction
+        case maxCandles
+        case backgroundOpacity
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        yAxisPaddingFraction = try container.decode(Double.self, forKey: .yAxisPaddingFraction)
+        maxCandles = try container.decode(Int.self, forKey: .maxCandles)
+        backgroundOpacity = try container.decodeIfPresent(Double.self, forKey: .backgroundOpacity) ?? 0.1
+    }
 }
 
 struct AssetConfig: Codable {

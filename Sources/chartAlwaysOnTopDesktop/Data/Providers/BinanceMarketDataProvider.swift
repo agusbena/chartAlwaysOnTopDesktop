@@ -16,6 +16,10 @@ final class BinanceMarketDataProvider: MarketDataProvider {
         switch timeframe {
         case .m1: interval = "1m"
         case .m5: interval = "5m"
+        case .m15: interval = "15m"
+        case .m30: interval = "30m"
+        case .h1: interval = "1h"
+        case .h4: interval = "4h"
         }
 
         var comps = URLComponents(string: "https://api.binance.com/api/v3/klines")

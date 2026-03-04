@@ -11,6 +11,7 @@ private struct Vertex {
 private final class RendererState {
     var frame: ChartFrame?
     var range = PriceRange(min: 0, max: 1)
+    var backgroundOpacity: Float = 0.1
 }
 
 final class ChartRenderer: NSView, MTKViewDelegate {
@@ -36,14 +37,16 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         return formatter
     }()
 
-    init(frame frameRect: CGRect, viewport: ChartViewportController, yPadding: Double) {
+    init(frame frameRect: CGRect, viewport: ChartViewportController, yPadding: Double, backgroundOpacity: Double) {
         self.viewport = viewport
         self.yPadding = yPadding
         self.mtkView = MTKView(frame: frameRect)
         super.init(frame: frameRect)
+        state.backgroundOpacity = Float(backgroundOpacity)
 
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.isOpaque = false
 
         configureMetal()
         configureAxisLabels()
@@ -84,11 +87,11 @@ final class ChartRenderer: NSView, MTKViewDelegate {
             return
         }
 
-        let snapshot = stateQueue.sync { () -> (ChartFrame?, PriceRange) in
-            (state.frame, state.range)
+        let snapshot = stateQueue.sync { () -> (ChartFrame?, PriceRange, Float) in
+            (state.frame, state.range, state.backgroundOpacity)
         }
 
-        let vertices = buildVertices(frame: snapshot.0, range: snapshot.1)
+        let vertices = buildVertices(frame: snapshot.0, range: snapshot.1, backgroundOpacity: snapshot.2)
         if !vertices.isEmpty, let buffer = deviceRef?.makeBuffer(bytes: vertices, length: MemoryLayout<Vertex>.stride * vertices.count) {
             encoder.setRenderPipelineState(pipelineState)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
@@ -117,6 +120,12 @@ final class ChartRenderer: NSView, MTKViewDelegate {
 
     func triggerBlinkPulse() {
         blinkUntil = Date().addingTimeInterval(0.35)
+    }
+
+    func setBackgroundOpacity(_ value: Double) {
+        stateQueue.sync {
+            state.backgroundOpacity = Float(Swift.max(0, Swift.min(1, value)))
+        }
     }
 
     private func configureMetal() {
@@ -152,11 +161,11 @@ final class ChartRenderer: NSView, MTKViewDelegate {
 
         deviceRef = device
         queueRef = device.makeCommandQueue()
-
         mtkView.device = device
         mtkView.delegate = self
         mtkView.colorPixelFormat = .bgra8Unorm
-        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0.1)
+        mtkView.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0.0)// Background color.
+        mtkView.layer?.isOpaque = false;
         mtkView.isPaused = false
         mtkView.enableSetNeedsDisplay = false
         mtkView.preferredFramesPerSecond = 30
@@ -172,10 +181,10 @@ final class ChartRenderer: NSView, MTKViewDelegate {
             descriptor.colorAttachments[0].isBlendingEnabled = true
             descriptor.colorAttachments[0].rgbBlendOperation = .add
             descriptor.colorAttachments[0].alphaBlendOperation = .add
-            descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha 
             descriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
             descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-            descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha            
             pipelineState = try device.makeRenderPipelineState(descriptor: descriptor)
         } catch {
             fatalError("Failed to create metal pipeline: \(error)")
@@ -203,7 +212,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         staleLabel.frame = CGRect(x: bounds.width - 140, y: bounds.height - 18, width: 130, height: 14)
     }
 
-    private func updateLabels() {
+    private func updateLabels() { // Print Prices values
         guard let frame = state.frame else { return }
         let slice = viewport.visibleSlice(for: frame.candles)
         let range = state.range
@@ -219,13 +228,25 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         staleLabel.stringValue = frame.isStale ? "STALE DATA" : ""
     }
 
-    private func buildVertices(frame: ChartFrame?, range: PriceRange) -> [Vertex] {
+    private func buildVertices(frame: ChartFrame?, range: PriceRange, backgroundOpacity: Float) -> [Vertex] {
         guard let frame else { return [] }
         let candles = Array(viewport.visibleSlice(for: frame.candles))
         guard candles.count > 1 else { return [] }
 
         var vertices: [Vertex] = []
         vertices.reserveCapacity(candles.count * 12)
+
+        if backgroundOpacity > 0 {
+            let bgColorLevel: Float = 0.35;
+            addQuad(
+                vertices: &vertices,
+                x0: -1,
+                y0: -1,
+                x1: 1,
+                y1: 1,
+                color: SIMD4<Float>(bgColorLevel, bgColorLevel, bgColorLevel, backgroundOpacity)
+            )
+        }
 
         if let blinkUntil, Date() < blinkUntil {
             addQuad(
@@ -250,7 +271,8 @@ final class ChartRenderer: NSView, MTKViewDelegate {
             let highY = mapPriceToY(candle.high, range: range)
             let lowY = mapPriceToY(candle.low, range: range)
             let up = candle.close >= candle.open
-            let color = up ? SIMD4<Float>(0.2, 0.85, 0.35, 0.92) : SIMD4<Float>(0.95, 0.25, 0.25, 0.92)
+            //let color = up ? SIMD4<Float>(0.2, 0.85, 0.35, 0.92) : SIMD4<Float>(0.95, 0.25, 0.25, 0.92)// Candle sticks colors.
+            let color = up ? SIMD4<Float>(0.2, 0.85, 0.35, 1) : SIMD4<Float>(0.95, 0.25, 0.25, 1)// Candle sticks colors.
 
             addQuad(vertices: &vertices, x0: x - 0.004, y0: lowY, x1: x + 0.004, y1: highY, color: color)
             addQuad(vertices: &vertices, x0: x - candleWidth / 2, y0: min(openY, closeY), x1: x + candleWidth / 2, y1: max(openY, closeY), color: color)
@@ -268,7 +290,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
 
     private func addIndicatorVertices(into vertices: inout [Vertex], candles: [Candle], series: IndicatorSeries, range: PriceRange) {
         let color = nsColor(from: series.colorHex)
-        let rgba = SIMD4<Float>(Float(color.redComponent), Float(color.greenComponent), Float(color.blueComponent), 0.95)
+        let rgba = SIMD4<Float>(Float(color.redComponent), Float(color.greenComponent), Float(color.blueComponent), 1.0/*0.95*/)
         guard series.points.count > 1 else { return }
 
         let byTime = Dictionary(uniqueKeysWithValues: series.points.map { ($0.timestamp, $0.value) })
@@ -285,8 +307,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         for i in 1 ..< points.count {
             let p0 = points[i - 1]
             let p1 = points[i]
-            let thickness: Float = 0.003
-            addQuad(vertices: &vertices, x0: min(p0.0, p1.0), y0: min(p0.1, p1.1) - thickness, x1: max(p0.0, p1.0), y1: max(p0.1, p1.1) + thickness, color: rgba)
+            addLineSegment(vertices: &vertices, from: p0, to: p1, thickness: 0.0035, color: rgba)
         }
     }
 
@@ -302,6 +323,37 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         let v3 = Vertex(position: SIMD2<Float>(x0, y1), color: color)
 
         vertices.append(contentsOf: [v0, v1, v2, v0, v2, v3])
+    }
+
+    private func addLineSegment(
+        vertices: inout [Vertex],
+        from p0: (Float, Float),
+        to p1: (Float, Float),
+        thickness: Float,
+        color: SIMD4<Float>
+    ) {
+        let start = SIMD2<Float>(p0.0, p0.1)
+        let end = SIMD2<Float>(p1.0, p1.1)
+        let direction = end - start
+        let length = simd_length(direction)
+        guard length > 0.000_001 else { return }
+
+        let unit = direction / length
+        let normal = SIMD2<Float>(-unit.y, unit.x) * (thickness / 2)
+
+        let a = start + normal
+        let b = end + normal
+        let c = end - normal
+        let d = start - normal
+
+        vertices.append(contentsOf: [
+            Vertex(position: a, color: color),
+            Vertex(position: b, color: color),
+            Vertex(position: c, color: color),
+            Vertex(position: a, color: color),
+            Vertex(position: c, color: color),
+            Vertex(position: d, color: color)
+        ])
     }
 
     private func nsColor(from hex: String) -> NSColor {
