@@ -18,6 +18,7 @@ struct Tick: Codable, Equatable {
 enum Timeframe: String, Codable, CaseIterable {
     case m1 = "1m"
     case m5 = "5m"
+    case m10 = "10m"
     case m15 = "15m"
     case m30 = "30m"
     case h1 = "1h"
@@ -27,6 +28,7 @@ enum Timeframe: String, Codable, CaseIterable {
         switch self {
         case .m1: return 60
         case .m5: return 300
+        case .m10: return 10 * 60
         case .m15: return 15 * 60
         case .m30: return 30 * 60
         case .h1: return 60 * 60

@@ -12,6 +12,7 @@ struct AlertEvent: Equatable {
 final class AlertEngine {
     private var previousValues: [String: Double] = [:]
     private var activeCrossing: Set<String> = []
+    private var latestAlertKey: String = ""; // Ptobably you should clean it after N minutes....
 
     func evaluate(alerts: [AlertConfig], assetId: String, price: Double, indicatorValues: [String: Double]) -> [AlertEvent] {
         var events: [AlertEvent] = []
@@ -28,6 +29,9 @@ final class AlertEngine {
 
             for threshold in alert.thresholds {
                 let key = runtimeKey(for: alert, threshold: threshold)
+                if latestAlertKey == key {
+                    continue
+                }
                 let shouldTrigger = isTriggered(
                     operator: alert.operator,
                     threshold: threshold,
@@ -47,6 +51,7 @@ final class AlertEngine {
                             )
                         )
                         activeCrossing.insert(key)
+                        latestAlertKey = key;
                     }
                 } else {
                     activeCrossing.remove(key)

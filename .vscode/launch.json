@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:chartAlwaysOnTopDesktop}",
+            "name": "Debug chartAlwaysOnTopDesktop",
+            "target": "chartAlwaysOnTopDesktop",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug chartAlwaysOnTopDesktop"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:chartAlwaysOnTopDesktop}",
+            "name": "Release chartAlwaysOnTopDesktop",
+            "target": "chartAlwaysOnTopDesktop",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release chartAlwaysOnTopDesktop"
+        }
+    ]
+}

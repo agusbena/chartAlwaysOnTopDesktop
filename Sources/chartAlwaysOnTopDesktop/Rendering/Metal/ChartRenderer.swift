@@ -393,6 +393,8 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         let color = nsColor(from: series.colorHex)
         let rgba = SIMD4<Float>(Float(color.redComponent), Float(color.greenComponent), Float(color.blueComponent), 1.0/*0.95*/)
         guard series.points.count > 1 else { return }
+        
+        let isRsi = series.id == "rsi_main" //"rsi"
 
         let byTime = Dictionary(uniqueKeysWithValues: series.points.map { ($0.timestamp, $0.value) })
         var points: [(Float, Float)] = []
@@ -400,7 +402,12 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         for (idx, candle) in candles.enumerated() {
             guard let value = byTime[candle.timestamp] else { continue }
             let x = -0.9 + (Float(idx) / Float(max(candles.count - 1, 1))) * 1.8
-            let y = mapPriceToY(value, range: range)
+            var y : Float = 0.0
+            if isRsi {
+                y = Float(value+0.5) * 200.0 //mapPriceToY(value * 20.0 + range.min, range: range)
+            } else {
+                y = mapPriceToY(value, range: range)
+            }
             points.append((x, y))
         }
 

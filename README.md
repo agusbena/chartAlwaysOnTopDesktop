@@ -8,6 +8,12 @@ Native macOS overlay chart app (Swift + AppKit + Metal) for always-on-top, semi-
 swift run
 ```
 
+## build
+
+```bash
+swift build --show-bin-path -c release
+```
+
 The app seeds config at:
 
 `~/.config/chart-always-on-top/config.json`
