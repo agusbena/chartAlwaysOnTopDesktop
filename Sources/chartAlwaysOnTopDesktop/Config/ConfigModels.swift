@@ -14,6 +14,10 @@ struct AppConfig: Codable {
             throw ConfigError.validation("polling.defaultPollSeconds must be >= 1")
         }
 
+        guard (20 ... 1000).contains(ui.maxCandles) else {
+            throw ConfigError.validation("ui.maxCandles must be between 20 and 1000")
+        }
+
         let enabledAssets = assets.filter(\.enabled)
         guard !enabledAssets.isEmpty else {
             throw ConfigError.validation("At least one asset must be enabled")
@@ -23,6 +27,9 @@ struct AppConfig: Codable {
         for asset in assets {
             guard ids.insert(asset.id).inserted else {
                 throw ConfigError.validation("Duplicate asset id: \(asset.id)")
+            }
+            if asset.provider == "binance", asset.timeframe == .m10 {
+                throw ConfigError.validation("Binance does not support 10m candles; use 5m or 15m for \(asset.id)")
             }
             if let pollSeconds = asset.pollSeconds, pollSeconds < 1 {
                 throw ConfigError.validation("asset.pollSeconds must be >= 1 for \(asset.id)")

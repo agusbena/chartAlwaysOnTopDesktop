@@ -99,16 +99,63 @@ final class MarketDataEngineTests: XCTestCase {
         await engine.pollOnce(now: Date(timeIntervalSince1970: 601))
         XCTAssertEqual(engine.snapshot().candles, provider.candles)
     }
+    func testTimeframeSwitchClearsOldCandlesAndFetchesNewHistory() async {
+        let provider = MockProvider()
+        let engine = makeEngine(provider)
+        provider.candles = [candle(0), candle(1)]
+        await engine.pollOnce(now: Date(timeIntervalSince1970: 61))
+        engine.changeTimeframe(by: 1)
+        XCTAssertEqual(engine.snapshot().timeframe, .m3)
+        XCTAssertTrue(engine.snapshot().candles.isEmpty)
+        XCTAssertNil(engine.snapshot().latestPrice)
+        provider.candles = [candle(3), candle(6)]
+        await engine.pollOnce(now: Date(timeIntervalSince1970: 361))
+        XCTAssertEqual(provider.timeframes, [.m1, .m3])
+        XCTAssertEqual(provider.limits, [300, 300])
+        XCTAssertEqual(engine.snapshot().candles, provider.candles)
+    }
+
+    func testInFlightOldTimeframeResponseIsDiscarded() async {
+        let provider = MockProvider()
+        let engine = makeEngine(provider)
+        provider.candles = [candle(0)]
+        provider.beforeReturn = { engine.changeTimeframe(by: 1) }
+        await engine.pollOnce(now: Date(timeIntervalSince1970: 1))
+        XCTAssertEqual(engine.snapshot().timeframe, .m3)
+        XCTAssertTrue(engine.snapshot().candles.isEmpty)
+        provider.beforeReturn = nil
+        provider.candles = [candle(3)]
+        await engine.pollOnce(now: Date(timeIntervalSince1970: 181))
+        XCTAssertEqual(engine.snapshot().candles, provider.candles)
+        XCTAssertEqual(provider.limits, [300, 300])
+    }
+
+    func testTimeframeChangeWhileSleepingDefersRequestsUntilWake() async {
+        let provider = MockProvider()
+        let engine = makeEngine(provider)
+        engine.suspend()
+        engine.changeTimeframe(by: 1)
+        await engine.pollOnce()
+        XCTAssertTrue(provider.limits.isEmpty)
+        engine.resume()
+        provider.candles = [candle(3)]
+        await engine.pollOnce(now: Date(timeIntervalSince1970: 181))
+        XCTAssertEqual(provider.timeframes, [.m3])
+        XCTAssertEqual(provider.limits, [300])
+    }
+
 }
 
 private final class MockProvider: MarketDataProvider {
     var candles: [Candle] = []
     var limits: [Int] = []
+    var timeframes: [Timeframe] = []
     var shouldFail = false
     var beforeReturn: (() -> Void)?
 
     func fetchHistoricalCandles(symbol: String, timeframe: Timeframe, limit: Int) async throws -> [Candle] {
         limits.append(limit)
+        timeframes.append(timeframe)
         if shouldFail { throw MarketDataError.invalidResponse }
         beforeReturn?()
         return candles

@@ -3,7 +3,7 @@ import Foundation
 final class MarketDataEngine: @unchecked Sendable {
     struct AssetState {
         let config: AssetConfig
-        let timeframe: Timeframe
+        var timeframe: Timeframe
         let pollSeconds: Int
         var candles: [Candle]
         var latestPrice: Double?
@@ -79,6 +79,25 @@ final class MarketDataEngine: @unchecked Sendable {
         restartPolling()
     }
 
+    func changeTimeframe(by direction: Int) {
+        let changed = queue.sync { () -> Bool in
+            let next = state.timeframe.adjacent(direction)
+            guard next != state.timeframe else { return false }
+            // Invalidate old responses before publishing the new interval, even during sleep.
+            generation += 1
+            state.timeframe = next
+            alertEngine?.resetIndicatorComparisons(alerts: alerts)
+            state.candles = []
+            state.latestPrice = nil
+            state.lastUpdate = nil
+            state.isStale = false
+            needsHistory = true
+            publishFrameAndAlerts(evaluateAlerts: false)
+            return true
+        }
+        if changed { restartPolling() }
+    }
+
     private func restartPolling() {
         queue.sync {
             generation += 1
@@ -111,7 +130,7 @@ final class MarketDataEngine: @unchecked Sendable {
               let provider = providerRegistry.provider(for: snapshot.config.provider) else { return }
         let gap = snapshot.lastUpdate.map { now.timeIntervalSince($0) > Double(max(snapshot.pollSeconds * 3, staleAfterSeconds)) } ?? true
         let crossedMultipleBuckets = snapshot.candles.last.map {
-            snapshot.timeframe.bucketStart(for: now).timeIntervalSince($0.timestamp) > snapshot.timeframe.seconds
+            snapshot.timeframe.bucketStart(for: now) > snapshot.timeframe.nextBucket(after: $0.timestamp)
         } ?? true
         let fullRefresh = context.2 || gap || crossedMultipleBuckets || snapshot.candles.isEmpty
 
@@ -162,7 +181,7 @@ final class MarketDataEngine: @unchecked Sendable {
             })
             onAlertEvents?(alertEngine.evaluate(alerts: alerts, assetId: state.config.id, price: price, indicatorValues: values))
         }
-        onFrame?(ChartFrame(symbol: state.config.symbol, candles: state.candles, indicators: series, isStale: state.isStale))
+        onFrame?(ChartFrame(symbol: state.config.symbol, candles: state.candles, indicators: series, isStale: state.isStale, timeframe: state.timeframe, isLoading: needsHistory && state.candles.isEmpty))
     }
 
     func snapshot() -> AssetState {

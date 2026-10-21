@@ -66,7 +66,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             throw NSError(domain: "screen", code: 1)
         }
 
-        let viewport = ChartViewportController(initialVisibleCount: min(config.ui.maxCandles, 180))
+        let viewport = ChartViewportController(initialVisibleCount: min(config.ui.maxCandles, 180), maximumVisible: config.ui.maxCandles)
         let rendererFrame = CGRect(origin: .zero, size: config.window.frame.size)
         let renderer = ChartRenderer(
             frame: rendererFrame,
@@ -83,8 +83,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         _ = manager.buildWindow(
             frame: safeFrame,
             contentView: renderer,
-            opacity: config.window.opacity,
-            clickThroughByDefault: config.window.clickThroughByDefault
+            opacity: config.window.opacity
         )
         manager.show()
         overlayWindowManager = manager
@@ -109,6 +108,9 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
         let registry = ProviderRegistry.live()
         let engine = MarketDataEngine(providerRegistry: registry, config: config, initialAsset: activeAsset)
         dataEngine = engine
+        chartRenderer?.onTimeframeStep = { [weak engine] direction in
+            engine?.changeTimeframe(by: direction)
+        }
 
         engine.onFrame = { [weak self] frame in
             DispatchQueue.main.async {
@@ -165,7 +167,7 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             }
             chartRenderer?.setBackgroundOpacity(config.ui.backgroundOpacity)
             chartRenderer?.setKeepBlinkingUntilCtrlClick(config.ui.keepBlinkingUntilCtrlClick)
-            overlayWindowManager?.setClickThrough(config.window.clickThroughByDefault)
+            overlayWindowManager?.setClickThrough(!NSEvent.modifierFlags.contains(.control))
             print("Config reloaded")
         case .failure(let error):
             print("Config reload failed: \(error.localizedDescription)")

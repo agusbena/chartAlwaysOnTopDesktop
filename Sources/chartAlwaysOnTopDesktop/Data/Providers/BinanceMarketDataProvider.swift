@@ -12,16 +12,8 @@ final class BinanceMarketDataProvider: MarketDataProvider {
     }
 
     func fetchHistoricalCandles(symbol: String, timeframe: Timeframe, limit: Int) async throws -> [Candle] {
-        let interval: String
-        switch timeframe {
-        case .m1: interval = "1m"
-        case .m5: interval = "5m"
-        case .m10: interval = "10m"
-        case .m15: interval = "15m"
-        case .m30: interval = "30m"
-        case .h1: interval = "1h"
-        case .h4: interval = "4h"
-        }
+        guard Timeframe.binanceIntervals.contains(timeframe) else { throw MarketDataError.unsupportedTimeframe }
+        let interval = timeframe.rawValue
 
         var comps = URLComponents(string: "https://api.binance.com/api/v3/klines")
         comps?.queryItems = [

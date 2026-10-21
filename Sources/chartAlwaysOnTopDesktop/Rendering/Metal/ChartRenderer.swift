@@ -25,6 +25,11 @@ final class ChartRenderer: NSView, MTKViewDelegate {
     private let yAxisBottomLabel = NSTextField(labelWithString: "")
     private let staleLabel = NSTextField(labelWithString: "")
     private let currentPriceLabel = NSTextField(labelWithString: "")
+    private let timeframeLabel = NSTextField(labelWithString: "")
+    private let timeframeUpLabel = NSTextField(labelWithString: "↑")
+    private let timeframeDownLabel = NSTextField(labelWithString: "↓")
+    var onTimeframeStep: ((Int) -> Void)?
+
     private let alertLabels = [
         NSTextField(labelWithString: ""),
         NSTextField(labelWithString: ""),
@@ -78,25 +83,63 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         layoutLabels()
     }
 
+    // All chart decorations route mouse events to this view, including the Metal surface.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(convert(point, from: superview)) ? self : nil
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        event?.modifierFlags.contains(.control) == true
+    }
+
     override func mouseDragged(with event: NSEvent) {
-        let dx = Int(event.deltaX / 3)
+        guard event.modifierFlags.contains(.control) else { return }
         stateQueue.sync {
-            let total = state.frame?.candles.count ?? 0
-            viewport.pan(by: dx, totalCandles: total)
+            viewport.pan(by: Int(event.deltaX / 3), totalCandles: state.frame?.candles.count ?? 0)
+            updateRange()
         }
+        updateLabels()
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        mouseDragged(with: event)
     }
 
     override func scrollWheel(with event: NSEvent) {
+        guard event.modifierFlags.contains(.control) else { return }
         stateQueue.sync {
-            let total = state.frame?.candles.count ?? 0
-            viewport.zoom(by: event.deltaY, totalCandles: total)
+            viewport.zoom(by: event.scrollingDeltaY, totalCandles: state.frame?.candles.count ?? 0)
+            updateRange()
         }
+        updateLabels()
     }
 
     override func mouseDown(with event: NSEvent) {
-        if event.modifierFlags.contains(.control) {
-            acknowledgePersistentBlink()
+        guard event.modifierFlags.contains(.control) else { return }
+        window?.makeKey()
+        window?.makeFirstResponder(self)
+        acknowledgePersistentBlink()
+        let point = convert(event.locationInWindow, from: nil)
+        if timeframeUpLabel.frame.contains(point) { onTimeframeStep?(1) }
+        if timeframeDownLabel.frame.contains(point) { onTimeframeStep?(-1) }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        mouseDown(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control), event.keyCode == 126 || event.keyCode == 125 {
+            onTimeframeStep?(event.keyCode == 126 ? 1 : -1)
+        } else {
+            super.keyDown(with: event)
         }
+    }
+
+    // Call with stateQueue held so zoom/pan immediately updates the price scale.
+    private func updateRange() {
+        state.range = viewport.visibleRange(for: state.frame?.candles ?? [], paddingFraction: yPadding)
     }
 
     func draw(in view: MTKView) {
@@ -109,17 +152,15 @@ final class ChartRenderer: NSView, MTKViewDelegate {
             return
         }
 
-        let snapshot = stateQueue.sync { () -> (ChartFrame?, PriceRange, Float, Bool, Date?) in
-            (state.frame, state.range, state.backgroundOpacity, state.persistentBlinkActive, state.blinkUntil)
+        let vertices = stateQueue.sync {
+            buildVertices(
+                frame: state.frame,
+                range: state.range,
+                backgroundOpacity: state.backgroundOpacity,
+                persistentBlinkActive: state.persistentBlinkActive,
+                blinkUntil: state.blinkUntil
+            )
         }
-
-        let vertices = buildVertices(
-            frame: snapshot.0,
-            range: snapshot.1,
-            backgroundOpacity: snapshot.2,
-            persistentBlinkActive: snapshot.3,
-            blinkUntil: snapshot.4
-        )
         if !vertices.isEmpty, let buffer = deviceRef?.makeBuffer(bytes: vertices, length: MemoryLayout<Vertex>.stride * vertices.count) {
             encoder.setRenderPipelineState(pipelineState)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
@@ -137,6 +178,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
 
     func update(frame: ChartFrame) {
         stateQueue.sync {
+            if state.frame?.timeframe != frame.timeframe { viewport.resetToLatest() }
             state.frame = frame
             state.range = viewport.visibleRange(for: frame.candles, paddingFraction: yPadding)
         }
@@ -254,7 +296,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
     }
 
     private func configureAxisLabels() {
-        [xAxisLabel, yAxisTopLabel, yAxisBottomLabel, staleLabel, currentPriceLabel].forEach {
+        [xAxisLabel, yAxisTopLabel, yAxisBottomLabel, staleLabel, currentPriceLabel, timeframeLabel, timeframeUpLabel, timeframeDownLabel].forEach {
             $0.isBezeled = false
             $0.drawsBackground = false
             $0.textColor = NSColor.white.withAlphaComponent(0.9)
@@ -271,44 +313,136 @@ final class ChartRenderer: NSView, MTKViewDelegate {
             addSubview($0)
         }
 
+        // Footer text may span several lines; its layout grows upward from the bottom.
+        [currentPriceLabel, timeframeLabel, xAxisLabel, staleLabel].forEach {
+            $0.maximumNumberOfLines = 0
+            $0.lineBreakMode = .byWordWrapping
+            $0.cell?.wraps = true
+            $0.cell?.usesSingleLineMode = false
+        }
+
         staleLabel.textColor = NSColor.systemOrange
         currentPriceLabel.textColor = NSColor.systemGreen
+        [timeframeLabel, timeframeUpLabel, timeframeDownLabel].forEach { $0.textColor = currentPriceLabel.textColor }
+        timeframeUpLabel.toolTip = "Control-click: larger timeframe"
+        timeframeDownLabel.toolTip = "Control-click: smaller timeframe"
         layoutLabels()
     }
 
     private func layoutLabels() {
-        xAxisLabel.frame = CGRect(x: 8, y: 6, width: bounds.width - 16, height: 14)
-        yAxisTopLabel.frame = CGRect(x: 8, y: bounds.height - 18, width: 150, height: 14)
-        yAxisBottomLabel.frame = CGRect(x: 8, y: 22, width: 150, height: 14)
-        currentPriceLabel.frame = CGRect(x: 170, y: bounds.height - 18, width: 220, height: 14)
-        staleLabel.frame = CGRect(x: bounds.width - 140, y: bounds.height - 18, width: 130, height: 14)
-        alertLabels[0].frame = CGRect(x: bounds.width - 220, y: 40, width: 310, height: 14)
-        alertLabels[1].frame = CGRect(x: bounds.width - 220, y: 24, width: 310, height: 14)
-        alertLabels[2].frame = CGRect(x: bounds.width - 220, y: 8, width: 310, height: 14)
+        let margin: CGFloat = 8
+        let bottom: CGFloat = 6
+        let gap: CGFloat = 8
+        let rowGap: CGFloat = 3
+        let availableWidth = max(bounds.width - margin * 2, 1)
+
+        struct FooterItem {
+            let labels: [NSTextField]
+            let sizes: [CGSize]
+            var spacing: CGFloat = 0
+            var width: CGFloat { sizes.reduce(0) { $0 + $1.width } + spacing * CGFloat(max(labels.count - 1, 0)) }
+            var height: CGFloat { sizes.map(\.height).max() ?? 0 }
+        }
+
+        func textSize(_ label: NSTextField, maximumWidth: CGFloat? = nil) -> CGSize {
+            let attributes: [NSAttributedString.Key: Any] = [.font: label.font ?? NSFont.systemFont(ofSize: 11)]
+            let text = label.stringValue as NSString
+            // NSTextField reserves a small horizontal inset for its cell.
+            let naturalWidth = ceil(text.size(withAttributes: attributes).width) + 6
+            // Preserve the controls' position when the price disappears during a reload.
+            let width = min(label === currentPriceLabel ? max(naturalWidth, 220) : naturalWidth, maximumWidth ?? availableWidth)
+            let measured = text.boundingRect(
+                with: CGSize(width: max(width - 6, 1), height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: attributes
+            )
+            return CGSize(width: width, height: max(20, ceil(measured.height) + 6))
+        }
+
+        let controls = FooterItem(
+            labels: [timeframeUpLabel, timeframeDownLabel, timeframeLabel],
+            sizes: [CGSize(width: 20, height: 20), CGSize(width: 20, height: 20), textSize(timeframeLabel)]
+        )
+        // Treat the asset, price, arrows and interval as one item so wrapping
+        // cannot put the asset on a different row from its controls.
+        let priceWidth = max(availableWidth - controls.width - gap, 1)
+        let header = FooterItem(
+            labels: [currentPriceLabel] + controls.labels,
+            sizes: [textSize(currentPriceLabel, maximumWidth: priceWidth)] + controls.sizes,
+            spacing: gap / 3
+        )
+        var items = [header]
+        items.append(FooterItem(labels: [xAxisLabel], sizes: [textSize(xAxisLabel)]))
+        if !staleLabel.stringValue.isEmpty {
+            items.append(FooterItem(labels: [staleLabel], sizes: [textSize(staleLabel)]))
+        } else {
+            staleLabel.frame = .zero
+        }
+
+        var rows: [[FooterItem]] = [[]]
+        var rowWidth: CGFloat = 0
+        for item in items {
+            let spacing: CGFloat = rows[rows.count - 1].isEmpty ? 0 : gap
+            // The range/status wraps underneath the header, which always stays first.
+            if (rows.count == 1 || rowWidth + spacing + item.width > availableWidth), !rows[rows.count - 1].isEmpty {
+                rows.append([])
+                rowWidth = 0
+            }
+            rowWidth += (rows[rows.count - 1].isEmpty ? 0 : gap) + item.width
+            rows[rows.count - 1].append(item)
+        }
+
+        // AppKit coordinates grow upward: position the final row first so the entire
+        // footer stays pinned to the bottom and extra rows cannot fall below the window.
+        var y = bottom
+        for row in rows.reversed() {
+            let height = row.map(\.height).max() ?? 20
+            var x = margin
+            for item in row {
+                for (label, size) in zip(item.labels, item.sizes) {
+                    label.frame = CGRect(x: x, y: y + (height - size.height) / 2, width: size.width, height: size.height)
+                    x += size.width + item.spacing
+                }
+                x += gap - item.spacing
+            }
+            y += height + rowGap
+        }
+
+        yAxisTopLabel.frame = CGRect(x: margin, y: bounds.height - 18, width: min(150, availableWidth), height: 14)
+        yAxisBottomLabel.frame = CGRect(x: margin, y: y, width: min(150, availableWidth), height: 14)
+        // Alerts occupy their own rows above the footer, within the window's width.
+        for (index, label) in alertLabels.enumerated() {
+            label.frame = CGRect(x: margin, y: y + 18 + CGFloat(alertLabels.count - index - 1) * 16, width: availableWidth, height: 14)
+        }
     }
 
     private func updateLabels() {
-        let snapshot = stateQueue.sync { () -> (ChartFrame?, PriceRange, [String]) in
-            (state.frame, state.range, state.latestAlerts)
+        let snapshot = stateQueue.sync { () -> (ChartFrame?, PriceRange, [String], [Candle]) in
+            (state.frame, state.range, state.latestAlerts, Array(viewport.visibleSlice(for: state.frame?.candles ?? [])))
         }
         guard let frame = snapshot.0 else { return }
-        let slice = viewport.visibleSlice(for: frame.candles)
+        let slice = snapshot.3
         let range = snapshot.1
         let latestAlerts = snapshot.2
         yAxisTopLabel.stringValue = String(format: "%.4f", range.max)
         yAxisBottomLabel.stringValue = String(format: "%.4f", range.min)
-        currentPriceLabel.stringValue = String(format: "Price: %.4f", frame.candles.last?.close ?? 0)
+        currentPriceLabel.stringValue = frame.candles.last.map { "\(frame.symbol) " + String(format: "%.4f", $0.close) } ?? frame.symbol
+        timeframeLabel.stringValue = frame.timeframe.rawValue
+        timeframeUpLabel.alphaValue = frame.timeframe == Timeframe.binanceIntervals.last ? 0.35 : 1
+        timeframeDownLabel.alphaValue = frame.timeframe == Timeframe.binanceIntervals.first ? 0.35 : 1
+        dateFormatter.dateFormat = frame.timeframe == .s1 ? "HH:mm:ss" : (frame.timeframe.seconds < 86400 ? "MMM d HH:mm" : "yyyy-MM-dd")
 
         if let first = slice.first?.timestamp, let last = slice.last?.timestamp {
-            xAxisLabel.stringValue = "\(dateFormatter.string(from: first)) - \(dateFormatter.string(from: last))  \(frame.symbol)"
+            xAxisLabel.stringValue = "\(dateFormatter.string(from: first)) - \(dateFormatter.string(from: last))  \(slice.count)/\(viewport.maximumVisible) candles"
         } else {
             xAxisLabel.stringValue = frame.symbol
         }
 
-        staleLabel.stringValue = frame.isStale ? "STALE DATA" : ""
+        staleLabel.stringValue = frame.isLoading ? (frame.isStale ? "RETRYING…" : "LOADING…") : (frame.isStale ? "STALE DATA" : "")
         for idx in 0 ..< alertLabels.count {
             alertLabels[idx].stringValue = idx < latestAlerts.count ? latestAlerts[idx] : ""
         }
+        layoutLabels()
     }
 
     private func buildVertices(
@@ -320,7 +454,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
     ) -> [Vertex] {
         guard let frame else { return [] }
         let candles = Array(viewport.visibleSlice(for: frame.candles))
-        guard candles.count > 1 else { return [] }
+        guard !candles.isEmpty else { return [] }
 
         var vertices: [Vertex] = []
         vertices.reserveCapacity(candles.count * 12)
@@ -366,7 +500,7 @@ final class ChartRenderer: NSView, MTKViewDelegate {
         let maxVolume = max(candles.map(\.volume).max() ?? 1.0, 1.0)
 
         for (index, candle) in candles.enumerated() {
-            let x = -0.9 + (Float(index) / Float(candles.count - 1)) * 1.8
+            let x: Float = candles.count == 1 ? 0 : -0.9 + (Float(index) / Float(candles.count - 1)) * 1.8
             let openY = mapPriceToY(candle.open, range: range)
             let closeY = mapPriceToY(candle.close, range: range)
             let highY = mapPriceToY(candle.high, range: range)

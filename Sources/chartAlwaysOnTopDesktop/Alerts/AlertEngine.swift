@@ -14,6 +14,19 @@ final class AlertEngine {
     private var activeCrossing: Set<String> = []
     private var latestAlertKey: String = ""; // Ptobably you should clean it after N minutes....
 
+    // Indicator values from different candle intervals must not form a crossing.
+    func resetIndicatorComparisons(alerts: [AlertConfig]) {
+        for alert in alerts {
+            guard case .indicator = alert.source else { continue }
+            for threshold in alert.thresholds {
+                let key = runtimeKey(for: alert, threshold: threshold)
+                previousValues.removeValue(forKey: key)
+                activeCrossing.remove(key)
+                if latestAlertKey == key { latestAlertKey = "" }
+            }
+        }
+    }
+
     func evaluate(alerts: [AlertConfig], assetId: String, price: Double, indicatorValues: [String: Double]) -> [AlertEvent] {
         var events: [AlertEvent] = []
 
