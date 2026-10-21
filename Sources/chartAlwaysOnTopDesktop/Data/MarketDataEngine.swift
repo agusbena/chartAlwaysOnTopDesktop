@@ -15,11 +15,12 @@ final class MarketDataEngine: @unchecked Sendable {
     private let staleAfterSeconds: Int
     private let maxCandles: Int
     private let queue = DispatchQueue(label: "market.data.engine.queue")
-
     private var state: AssetState
     private var pollTask: Task<Void, Never>?
+    private var generation = 0
+    private var isSuspended = false
+    private var needsHistory = true
     private var reconnectBackoffSeconds = 1
-
     private var indicatorEngine: IndicatorEngine?
     private var indicatorConfigs: [IndicatorConfig] = []
     private var alerts: [AlertConfig] = []
@@ -32,40 +33,12 @@ final class MarketDataEngine: @unchecked Sendable {
         self.providerRegistry = providerRegistry
         self.staleAfterSeconds = config.polling.staleAfterSeconds
         self.maxCandles = config.ui.maxCandles
-
-        let timeframe = initialAsset.timeframe ?? .m1
-        let pollSeconds = initialAsset.pollSeconds ?? config.polling.defaultPollSeconds
         self.state = AssetState(
             config: initialAsset,
-            timeframe: timeframe,
-            pollSeconds: pollSeconds,
-            candles: [],
-            latestPrice: nil,
-            lastUpdate: nil,
-            isStale: false
+            timeframe: initialAsset.timeframe ?? .m1,
+            pollSeconds: initialAsset.pollSeconds ?? config.polling.defaultPollSeconds,
+            candles: [], latestPrice: nil, lastUpdate: nil, isStale: false
         )
-    }
-
-    func bootstrap() async {
-        guard let provider = queue.sync(execute: { providerRegistry.provider(for: state.config.provider) }) else {
-            print("No provider for \(state.config.provider)")
-            return
-        }
-
-        do {
-            let snapshot = queue.sync { state }
-            let candles = try await provider.fetchHistoricalCandles(
-                symbol: snapshot.config.symbol,
-                timeframe: snapshot.timeframe,
-                limit: min(maxCandles, 500)
-            )
-            queue.sync {
-                state.candles = candles
-            }
-            publishFrame(indicators: [])
-        } catch {
-            print("Historical fetch failed: \(error.localizedDescription)")
-        }
     }
 
     func start(
@@ -74,118 +47,122 @@ final class MarketDataEngine: @unchecked Sendable {
         alerts: [AlertConfig],
         alertEngine: AlertEngine
     ) {
-        self.indicatorEngine = indicatorEngine
-        self.indicatorConfigs = indicatorConfigs
-        self.alerts = alerts
-        self.alertEngine = alertEngine
-        pollTask?.cancel()
-
-        pollTask = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                await self.pollOnce()
-                let waitSeconds = self.queue.sync { self.state.pollSeconds }
-                try? await Task.sleep(for: .seconds(Double(waitSeconds)))
-            }
+        queue.sync {
+            self.indicatorEngine = indicatorEngine
+            self.indicatorConfigs = indicatorConfigs
+            self.alerts = alerts
+            self.alertEngine = alertEngine
         }
+        restartPolling()
     }
 
     func stop() {
-        pollTask?.cancel()
-        pollTask = nil
-    }
-
-    private func pollOnce() async {
-        guard let provider = queue.sync(execute: { providerRegistry.provider(for: state.config.provider) }) else { return }
-        guard let indicatorEngine, let alertEngine else { return }
-        let indicatorConfigs = self.indicatorConfigs
-        let alerts = self.alerts
-
-        do {
-            let snapshot = queue.sync { state }
-            let tick = try await provider.fetchLatestTick(symbol: snapshot.config.symbol)
-            queue.sync {
-                reconnectBackoffSeconds = 1
-            }
-            merge(tick: tick)
-
-            let candles = queue.sync { state.candles }
-            let indicatorSeries = indicatorEngine.computeSeries(candles: candles, configs: indicatorConfigs)
-            let latestIndicatorValues = Dictionary(uniqueKeysWithValues: indicatorSeries.compactMap { series in
-                series.points.last.map { (series.id, $0.value) }
-            })
-
-            if let price = queue.sync(execute: { state.latestPrice }) {
-                let events = alertEngine.evaluate(
-                    alerts: alerts,
-                    assetId: queue.sync { state.config.id },
-                    price: price,
-                    indicatorValues: latestIndicatorValues
-                )
-                onAlertEvents?(events)
-            }
-
-            publishFrame(indicators: indicatorSeries)
-        } catch {
-            let snapshot = queue.sync { state }
-            queue.sync {
-                state.isStale = shouldMarkStale(lastUpdate: snapshot.lastUpdate)
-            }
-            publishFrame(indicators: [])
-            let wait = queue.sync {
-                let current = reconnectBackoffSeconds
-                reconnectBackoffSeconds = min(reconnectBackoffSeconds * 2, 60)
-                return current
-            }
-            try? await Task.sleep(for: .seconds(Double(wait)))
-            print("poll error: \(error.localizedDescription)")
+        queue.sync {
+            generation += 1
+            pollTask?.cancel()
+            pollTask = nil
         }
     }
 
-    private func publishFrame(indicators: [IndicatorSeries]) {
-        let frame = ChartFrame(
-            symbol: state.config.symbol,
-            candles: state.candles,
-            indicators: indicators,
-            isStale: state.isStale
-        )
-        onFrame?(frame)
+    func suspend() {
+        queue.sync { isSuspended = true }
+        stop()
     }
 
-    private func shouldMarkStale(lastUpdate: Date?) -> Bool {
-        guard let lastUpdate else { return true }
-        return Date().timeIntervalSince(lastUpdate) > Double(staleAfterSeconds)
+    func resume() {
+        queue.sync { isSuspended = false }
+        refreshHistory()
     }
 
-    func merge(tick: Tick) {
+    func refreshHistory() {
+        queue.sync { needsHistory = true }
+        restartPolling()
+    }
+
+    private func restartPolling() {
         queue.sync {
-            state.latestPrice = tick.price
-            state.lastUpdate = tick.timestamp
-            state.isStale = false
-
-            let bucketStart = state.timeframe.bucketStart(for: tick.timestamp)
-            if var last = state.candles.last, state.timeframe.bucketStart(for: last.timestamp) == bucketStart {
-                last.high = max(last.high, tick.price)
-                last.low = min(last.low, tick.price)
-                last.close = tick.price
-                last.volume += tick.volume ?? 0
-                state.candles[state.candles.count - 1] = last
-            } else {
-                let volume = tick.volume ?? 0
-                let candle = Candle(
-                    timestamp: bucketStart,
-                    open: tick.price,
-                    high: tick.price,
-                    low: tick.price,
-                    close: tick.price,
-                    volume: volume
-                )
-                state.candles.append(candle)
-                if state.candles.count > maxCandles {
-                    state.candles.removeFirst(state.candles.count - maxCandles)
+            generation += 1
+            pollTask?.cancel()
+            pollTask = nil
+            needsHistory = true
+            reconnectBackoffSeconds = 1
+            guard !isSuspended, indicatorEngine != nil else { return }
+            let currentGeneration = generation
+            pollTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let self else { return }
+                    await self.pollOnce(generation: currentGeneration)
+                    let wait = self.queue.sync { max(self.state.pollSeconds, self.reconnectBackoffSeconds) }
+                    do {
+                        try await Task.sleep(for: .seconds(wait))
+                    } catch { return }
                 }
             }
         }
+    }
+
+    // Internal entry point also allows deterministic recovery tests without timers or live requests.
+    func pollOnce(now: Date = .now, generation expectedGeneration: Int? = nil) async {
+        let context = queue.sync { (state, generation, needsHistory) }
+        let snapshot = context.0
+        let requestGeneration = expectedGeneration ?? context.1
+        guard queue.sync(execute: { generation == requestGeneration && !isSuspended }),
+              !Task.isCancelled,
+              let provider = providerRegistry.provider(for: snapshot.config.provider) else { return }
+        let gap = snapshot.lastUpdate.map { now.timeIntervalSince($0) > Double(max(snapshot.pollSeconds * 3, staleAfterSeconds)) } ?? true
+        let crossedMultipleBuckets = snapshot.candles.last.map {
+            snapshot.timeframe.bucketStart(for: now).timeIntervalSince($0.timestamp) > snapshot.timeframe.seconds
+        } ?? true
+        let fullRefresh = context.2 || gap || crossedMultipleBuckets || snapshot.candles.isEmpty
+
+        do {
+            // Refresh the current and previous bucket on every poll so even normally sampled
+            // candles get the exchange's true OHLCV. A recovery replaces the entire retained range.
+            let candles = try await provider.fetchHistoricalCandles(
+                symbol: snapshot.config.symbol,
+                timeframe: snapshot.timeframe,
+                limit: fullRefresh ? min(maxCandles, 1000) : 2
+            )
+            guard !candles.isEmpty else { throw MarketDataError.invalidResponse }
+            queue.sync {
+                // A canceled request may still complete after sleep or a reconnect.
+                guard !Task.isCancelled, generation == requestGeneration, !isSuspended else { return }
+                if fullRefresh {
+                    state.candles = Array(candles.suffix(maxCandles))
+                } else {
+                    var byTimestamp = Dictionary(uniqueKeysWithValues: state.candles.map { ($0.timestamp, $0) })
+                    for candle in candles { byTimestamp[candle.timestamp] = candle }
+                    state.candles = Array(byTimestamp.values.sorted { $0.timestamp < $1.timestamp }.suffix(maxCandles))
+                }
+                state.latestPrice = state.candles.last?.close
+                state.lastUpdate = now
+                state.isStale = false
+                needsHistory = false
+                reconnectBackoffSeconds = 1
+                publishFrameAndAlerts()
+            }
+        } catch {
+            queue.sync {
+                guard !Task.isCancelled, generation == requestGeneration, !isSuspended else { return }
+                needsHistory = true
+                state.isStale = state.lastUpdate.map { now.timeIntervalSince($0) > Double(staleAfterSeconds) } ?? true
+                reconnectBackoffSeconds = min(reconnectBackoffSeconds * 2, 60)
+                publishFrameAndAlerts(evaluateAlerts: false)
+                print("Candle fetch failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // Called only on the state queue, including callbacks, to preserve frame ordering.
+    private func publishFrameAndAlerts(evaluateAlerts: Bool = true) {
+        let series = indicatorEngine?.computeSeries(candles: state.candles, configs: indicatorConfigs) ?? []
+        if evaluateAlerts, let price = state.latestPrice, let alertEngine {
+            let values = Dictionary(uniqueKeysWithValues: series.compactMap { item in
+                item.points.last.map { (item.id, $0.value) }
+            })
+            onAlertEvents?(alertEngine.evaluate(alerts: alerts, assetId: state.config.id, price: price, indicatorValues: values))
+        }
+        onFrame?(ChartFrame(symbol: state.config.symbol, candles: state.candles, indicators: series, isStale: state.isStale))
     }
 
     func snapshot() -> AssetState {

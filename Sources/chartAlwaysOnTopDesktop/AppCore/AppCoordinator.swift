@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Network
 
 @MainActor
 public final class AppCoordinator: NSObject, NSApplicationDelegate {
@@ -11,6 +12,9 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     private var currentConfig: AppConfig?
 
     private var dataEngine: MarketDataEngine?
+    private let networkMonitor = NWPathMonitor()
+    private var wasNetworkAvailable: Bool?
+
     private let indicatorEngine = IndicatorEngine()
     private let alertEngine = AlertEngine()
     private let alertPresenter = AlertPresenter()
@@ -51,6 +55,8 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
     public func applicationWillTerminate(_ notification: Notification) {
         _ = notification
         inputController?.stop()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        networkMonitor.cancel()
         dataEngine?.stop()
         configService?.stopWatching()
     }
@@ -118,15 +124,33 @@ public final class AppCoordinator: NSObject, NSApplicationDelegate {
             }
         }
 
-        Task {
-            await engine.bootstrap()
-            engine.start(
-                indicatorEngine: indicatorEngine,
-                indicatorConfigs: config.indicators,
-                alerts: config.alerts,
-                alertEngine: alertEngine
-            )
+        let workspaceNotifications = NSWorkspace.shared.notificationCenter
+        workspaceNotifications.addObserver(self, selector: #selector(systemWillSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        workspaceNotifications.addObserver(self, selector: #selector(systemDidWake), name: NSWorkspace.didWakeNotification, object: nil)
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            let available = path.status == .satisfied
+            Task { @MainActor in
+                guard let self else { return }
+                let reconnected = self.wasNetworkAvailable == false && available
+                self.wasNetworkAvailable = available
+                if reconnected { self.dataEngine?.refreshHistory() }
+            }
         }
+        networkMonitor.start(queue: DispatchQueue(label: "market.network.monitor"))
+        engine.start(
+            indicatorEngine: indicatorEngine,
+            indicatorConfigs: config.indicators,
+            alerts: config.alerts,
+            alertEngine: alertEngine
+        )
+    }
+
+    @objc private func systemWillSleep(_ notification: Notification) {
+        dataEngine?.suspend()
+    }
+
+    @objc private func systemDidWake(_ notification: Notification) {
+        dataEngine?.resume()
     }
 
     private func handleConfigReload(_ result: Result<AppConfig, Error>) {

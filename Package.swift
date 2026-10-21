@@ -25,6 +25,10 @@ let package = Package(
                 .copy("Resources")
             ]
         ),
+        .testTarget(
+            name: "chartAlwaysOnTopDesktopTests",
+            dependencies: ["chartAlwaysOnTopDesktop"]
+        ),
         .executableTarget(
             name: "chartAlwaysOnTopDesktopApp",
             dependencies: ["chartAlwaysOnTopDesktop"],
